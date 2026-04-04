@@ -116,7 +116,7 @@ mod tests {
     #[ignore = "mutates process environment; run with --test-threads=1 to avoid races"]
     fn riot_api_key_missing_returns_err() {
         // SAFETY: this test is intentionally run with --test-threads=1 (see
-        // the ignore reason above) so no concurrent env reads can race here.
+        // the ignore reason above) so no concurrent env reads can grace here.
         unsafe { env::remove_var("RIOT_API_KEY") };
 
         let result = env::var("RIOT_API_KEY");
@@ -126,5 +126,56 @@ mod tests {
             "Expected Err when RIOT_API_KEY is unset, but got: {:?}",
             result.ok()
         );
+    }
+
+    #[test]
+    fn participant_deserializes_from_json() {
+        let json = r#"{
+            "kills": 5,
+            "deaths": 3,
+            "assists": 7,
+            "championName": "Jax",
+            "win": true,
+            "totalMinionsKilled": 203,
+            "goldEarned": 12772,
+            "teamPosition": "TOP"
+        }"#;
+
+        let p: crate::Participant = serde_json::from_str(json).expect("failed to deserialize");
+
+        assert_eq!(p.kills, 5);
+        assert_eq!(p.deaths, 3);
+        assert_eq!(p.assists, 7);
+        assert_eq!(p.champion_name, "Jax");
+        assert!(p.win);
+        assert_eq!(p.total_minions_killed, 203);
+        assert_eq!(p.gold_earned, 12772);
+        assert_eq!(p.team_position, "TOP");
+    }
+
+    #[test]
+    fn match_deserializes_from_json() {
+        let json = r#"{
+            "info": {
+                "participants": [
+                    {
+                        "kills": 10,
+                        "deaths": 2,
+                        "assists": 5,
+                        "championName": "Ahri",
+                        "win": false,
+                        "totalMinionsKilled": 180,
+                        "goldEarned": 11000,
+                        "teamPosition": "MIDDLE"
+                    }
+                ]
+            }
+        }"#;
+
+        let m: crate::Match = serde_json::from_str(json).expect("failed to deserialize");
+
+        assert_eq!(m.info.participants.len(), 1);
+        assert_eq!(m.info.participants[0].champion_name, "Ahri");
+        assert!(!m.info.participants[0].win);
     }
 }
