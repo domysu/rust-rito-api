@@ -15,6 +15,7 @@ use serde::Deserialize;
       gold_earned: u32,
       #[serde(rename = "teamPosition")]
       team_position: String,
+      puuid: String,
   }
 
   #[derive(Deserialize, Debug)]
@@ -23,7 +24,7 @@ use serde::Deserialize;
   }
 
   #[derive(Deserialize, Debug)]
-  struct Match {
+  struct MatchData {
       info: MatchInfo,
   }
 
@@ -60,13 +61,14 @@ use serde::Deserialize;
           .expect("request failed");
         
  let account: Account = response.json().await.expect("failed to parse response");
-
+ let matches = get_matches(&api_key, &account.puuid).await;
       println!("{:#?}", account);
-      println!("{:#?}", get_last_match(&api_key, &account.puuid).await)
+      println!("{:#?}", matches);
+      print_match_stats(&api_key, &matches[0], Some(account.puuid)).await;
 
   }
 
-  async fn get_last_match(api_key: &String, puuid: &String) -> Vec<String>
+  async fn get_matches(api_key: &String, puuid: &String) -> Vec<String>
   {
 
     
@@ -79,6 +81,30 @@ use serde::Deserialize;
     matches
 
 
+
+  }
+
+  async fn print_match_stats(api_key: &String, match_id: &String, puuid: Option<String>)
+  { 
+    
+   
+      let url = format!("https://europe.api.riotgames.com/lol/match/v5/matches/{}", match_id);
+    let client = reqwest::Client::new();
+    println!("{}", url);
+
+    let response = client.get(&url).header("X-Riot-Token", api_key).send().await.expect("match request failed");
+    let my_match: MatchData = response.json().await.expect("failed  to parse");
+
+     match puuid{
+        Some(p) => {
+
+            let player_stats = my_match.info.participants.iter().find(|participant| participant.puuid == p);
+            if let Some(player) = player_stats {println!("{:#?}", player)};
+
+    },
+        None => println!("{:#?}", my_match.info.participants)
+    }
+    
 
   }
 
@@ -138,7 +164,8 @@ mod tests {
             "win": true,
             "totalMinionsKilled": 203,
             "goldEarned": 12772,
-            "teamPosition": "TOP"
+            "teamPosition": "TOP",
+            "puuid":  "Q-RxiZ5zzysvK1Ox33s3NocUwCt_ju73ghTRACBLZLG4_bAFBTPH04LRH_AspOFOThjn3RLJJvlA5g"
         }"#;
 
         let p: crate::Participant = serde_json::from_str(json).expect("failed to deserialize");
@@ -151,6 +178,7 @@ mod tests {
         assert_eq!(p.total_minions_killed, 203);
         assert_eq!(p.gold_earned, 12772);
         assert_eq!(p.team_position, "TOP");
+        assert_eq!(p.puuid, "Q-RxiZ5zzysvK1Ox33s3NocUwCt_ju73ghTRACBLZLG4_bAFBTPH04LRH_AspOFOThjn3RLJJvlA5g");
     }
 
     #[test]
@@ -166,16 +194,140 @@ mod tests {
                         "win": false,
                         "totalMinionsKilled": 180,
                         "goldEarned": 11000,
-                        "teamPosition": "MIDDLE"
+                        "teamPosition": "MIDDLE",
+                        "puuid":  "Q-RxiZ5zzysvK1Ox33s3NocUwCt_ju73ghTRACBLZLG4_bAFBTPH04LRH_AspOFOThjn3RLJJvlA5g"
                     }
                 ]
             }
         }"#;
 
-        let m: crate::Match = serde_json::from_str(json).expect("failed to deserialize");
+        let m: crate::MatchData = serde_json::from_str(json).expect("failed to deserialize");
 
         assert_eq!(m.info.participants.len(), 1);
         assert_eq!(m.info.participants[0].champion_name, "Ahri");
         assert!(!m.info.participants[0].win);
+    }
+
+    // Account struct uses serde renames; verify they map correctly.
+    #[test]
+    fn account_deserializes_with_renamed_fields() {
+        let json = r#"{
+            "puuid": "abc-123",
+            "gameName": "Domis",
+            "tagLine": "2003"
+        }"#;
+
+        let a: crate::Account = serde_json::from_str(json).expect("failed to deserialize");
+
+        assert_eq!(a.puuid, "abc-123");
+        assert_eq!(a.game_name, "Domis");
+        assert_eq!(a.tag_line, "2003");
+    }
+
+    // The API can return a match with no participants (e.g. a cancelled game).
+    // MatchInfo must accept an empty array rather than panicking.
+    #[test]
+    fn match_with_zero_participants_deserializes() {
+        let json = r#"{ "info": { "participants": [] } }"#;
+
+        let m: crate::MatchData = serde_json::from_str(json).expect("failed to deserialize");
+
+        assert_eq!(m.info.participants.len(), 0);
+    }
+
+    // When multiple participants are present, find() must return the one whose
+    // puuid matches — not always the first element in the list.
+    #[test]
+    fn find_by_puuid_returns_correct_participant() {
+        let json = r#"{
+            "info": {
+                "participants": [
+                    {
+                        "kills": 1, "deaths": 1, "assists": 1,
+                        "championName": "Garen", "win": true,
+                        "totalMinionsKilled": 100, "goldEarned": 8000,
+                        "teamPosition": "TOP", "puuid": "player-one"
+                    },
+                    {
+                        "kills": 9, "deaths": 0, "assists": 3,
+                        "championName": "Lux", "win": true,
+                        "totalMinionsKilled": 210, "goldEarned": 14000,
+                        "teamPosition": "MIDDLE", "puuid": "player-two"
+                    }
+                ]
+            }
+        }"#;
+
+        let m: crate::MatchData = serde_json::from_str(json).expect("failed to deserialize");
+        let target_puuid = "player-two";
+
+        let found = m.info.participants.iter().find(|p| p.puuid == target_puuid);
+
+        assert!(found.is_some(), "expected to find participant with puuid '{}'", target_puuid);
+        assert_eq!(found.unwrap().champion_name, "Lux");
+    }
+
+    // find() must return None when the puuid is not in the participant list.
+    #[test]
+    fn find_by_puuid_returns_none_when_not_present() {
+        let json = r#"{
+            "info": {
+                "participants": [
+                    {
+                        "kills": 1, "deaths": 1, "assists": 1,
+                        "championName": "Garen", "win": true,
+                        "totalMinionsKilled": 100, "goldEarned": 8000,
+                        "teamPosition": "TOP", "puuid": "player-one"
+                    }
+                ]
+            }
+        }"#;
+
+        let m: crate::MatchData = serde_json::from_str(json).expect("failed to deserialize");
+
+        let found = m.info.participants.iter().find(|p| p.puuid == "does-not-exist");
+
+        assert!(found.is_none());
+    }
+
+    // A missing required field must produce an Err, not a silent default.
+    #[test]
+    fn participant_missing_required_field_returns_err() {
+        // "kills" is absent — deserialization should fail.
+        let json = r#"{
+            "deaths": 3,
+            "assists": 7,
+            "championName": "Jax",
+            "win": true,
+            "totalMinionsKilled": 203,
+            "goldEarned": 12772,
+            "teamPosition": "TOP",
+            "puuid": "player-one"
+        }"#;
+
+        let result: Result<crate::Participant, _> = serde_json::from_str(json);
+
+        assert!(result.is_err(), "expected Err when a required field is missing");
+    }
+
+    // A wrong type for a numeric field must also produce an Err.
+    #[test]
+    fn participant_wrong_field_type_returns_err() {
+        // "kills" is a string instead of u32.
+        let json = r#"{
+            "kills": "five",
+            "deaths": 3,
+            "assists": 7,
+            "championName": "Jax",
+            "win": true,
+            "totalMinionsKilled": 203,
+            "goldEarned": 12772,
+            "teamPosition": "TOP",
+            "puuid": "player-one"
+        }"#;
+
+        let result: Result<crate::Participant, _> = serde_json::from_str(json);
+
+        assert!(result.is_err(), "expected Err when a field has the wrong type");
     }
 }
